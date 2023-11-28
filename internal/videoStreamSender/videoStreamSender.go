@@ -35,6 +35,7 @@ type VideoStreamSender struct {
 	camCapturer  *CameraCapturer
 	encService   *encoders.EncoderService
 	streamer     *rtcStreamer
+	webrtcCodec  *webrtc.RTPCodecParameters
 }
 
 func (vss *VideoStreamSender) Init(websocktUrl string, stunUrl string) error {
@@ -61,10 +62,56 @@ func (vss *VideoStreamSender) Init(websocktUrl string, stunUrl string) error {
 		return err
 	}
 
+	// Init webrtcCodec
+	codecParam := &webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{
+			MimeType: webrtc.MimeTypeH264,
+		},
+	}
+
+	// Get rtc streamer
+	streamer, err := vss.GetRTCStreamer(cc.Size(), cc.Fps(), codecParam.RTPCodecCapability, cc)
+	if err != nil {
+		return err
+	}
+
 	vss.sgl = &s
 	vss.webrtcConfig = &peerConConfig
 	vss.camCapturer = cc
+	vss.webrtcCodec = codecParam
+	vss.streamer = streamer
 	return nil
+}
+
+func (vss *VideoStreamSender) GetRTCStreamer(srcSize size.Size, fps int, rtpCodecCap webrtc.RTPCodecCapability, camCapturer *CameraCapturer) (*rtcStreamer, error) {
+	encCodec := encoders.H264Codec
+	// Create a encoder
+	logger.Printf("encCodec: %+v\nwidth: %+v\nheight: %+v\nfps: %+v\n", encCodec, srcSize.Width, srcSize.Height, fps)
+	encoder, err := vss.encService.NewEncoder(encCodec, srcSize, fps)
+
+	logger.Println("encoder start: ============")
+	logger.Println(encoder)
+	logger.Println("encoder end: ============")
+	if err != nil {
+		return nil, err
+	}
+
+	size, err := encoder.VideoSize()
+	if err != nil {
+		return nil, err
+	}
+
+	track, err := webrtc.NewTrackLocalStaticSample(
+		rtpCodecCap,
+		"camera-video",
+		uuid.New().String(),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	streamer := newRTCStreamer(track, camCapturer, &encoder, size)
+	return streamer, nil
 }
 
 func (vss *VideoStreamSender) Run() error {
@@ -96,41 +143,20 @@ func (vss *VideoStreamSender) Run() error {
 			fmt.Printf("offer: {%v}", offStr)
 			decodeOffer(offStr, &offer)
 
-			// enc := &encoders.EncoderService{}
-			// webrtcCodec, encCodec, err := findBestCodec(&offer, enc, "42e01f")
-			encCodec := encoders.H264Codec
-			webrtcCodec := &webrtc.RTPCodecParameters{
-				RTPCodecCapability: webrtc.RTPCodecCapability{
-					MimeType: webrtc.MimeTypeH264,
-				},
-			}
-
 			if err != nil {
 				panic(err)
 			}
 			mediaEngine := webrtc.MediaEngine{}
-			mediaEngine.RegisterCodec(*webrtcCodec, webrtc.RTPCodecTypeVideo)
+			mediaEngine.RegisterCodec(*vss.webrtcCodec, webrtc.RTPCodecTypeVideo)
 			api := webrtc.NewAPI(webrtc.WithMediaEngine(&mediaEngine))
 			peerConnection, err := api.NewPeerConnection(*vss.webrtcConfig)
 			if err != nil {
 				panic(err)
 			}
 			vss.peerConn = peerConnection
-			track, err := webrtc.NewTrackLocalStaticSample(
-				webrtcCodec.RTPCodecCapability,
-				"camera-video",
-				uuid.New().String(),
-			)
-			if err != nil {
-				panic(err)
-			}
+			track := vss.streamer.track
 
-			logger.Printf("Using codec %s (%d) %s", webrtcCodec.MimeType, webrtcCodec.PayloadType, webrtcCodec.SDPFmtpLine)
-
-			direction, err := getTrackDirection(&offer)
-			if err != nil {
-				return err
-			}
+			direction := webrtc.RTPTransceiverDirectionRecvonly
 
 			if direction == webrtc.RTPTransceiverDirectionSendrecv {
 				_, err = peerConnection.AddTrack(track)
@@ -154,26 +180,6 @@ func (vss *VideoStreamSender) Run() error {
 			if err = peerConnection.SetRemoteDescription(offer); err != nil {
 				panic(err)
 			}
-
-			// Create a encoder
-			sourceSize := vss.camCapturer.Size()
-			logger.Printf("encCodec: %+v\nwidth: %+v\nheight: %+v\nfps: %+v\n", encCodec, sourceSize.Width, sourceSize.Height, vss.camCapturer.Fps())
-			encoder, err := vss.encService.NewEncoder(encCodec, sourceSize, vss.camCapturer.Fps())
-
-			logger.Println("encoder start: ============")
-			logger.Println(encoder)
-			logger.Println("encoder end: ============")
-			if err != nil {
-				panic(err)
-			}
-
-			size, err := encoder.VideoSize()
-			if err != nil {
-				return err
-			}
-
-			streamer := newRTCStreamer(track, vss.camCapturer, &encoder, size)
-			vss.streamer = streamer
 
 			// Set the handler for ICE connection state
 			// This will notify you when the peer has connected/disconnected
