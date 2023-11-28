@@ -6,6 +6,7 @@ import (
 	"image"
 	"math"
 
+	"github.com/acentior/camera-pipeline-sender/pkg/size"
 	x264 "github.com/gen2brain/x264-go"
 )
 
@@ -13,12 +14,12 @@ import (
 type H264Encoder struct {
 	buffer   *bytes.Buffer
 	encoder  *x264.Encoder
-	realSize image.Point
+	realSize size.Size
 }
 
 const h264SupportedProfile = "3.1"
 
-func NewH264Encoder(size image.Point, frameRate int) (*H264Encoder, error) {
+func newH264Encoder(size size.Size, frameRate int) (Encoder, error) {
 	buffer := bytes.NewBuffer(make([]byte, 0))
 	realSize, err := findBestSizeForH264Profile(h264SupportedProfile, size)
 	fmt.Printf(realSize.String())
@@ -26,8 +27,8 @@ func NewH264Encoder(size image.Point, frameRate int) (*H264Encoder, error) {
 		return nil, err
 	}
 	opts := x264.Options{
-		Width:     realSize.X,
-		Height:    realSize.Y,
+		Width:     realSize.Width,
+		Height:    realSize.Height,
 		FrameRate: frameRate,
 		Tune:      "zerolatency",
 		Preset:    "veryfast",
@@ -61,7 +62,7 @@ func (e *H264Encoder) Encode(frame *image.RGBA) ([]byte, error) {
 }
 
 // VideoSize returns the size the other side is expecting
-func (e *H264Encoder) VideoSize() (image.Point, error) {
+func (e *H264Encoder) VideoSize() (size.Size, error) {
 	return e.realSize, nil
 }
 
@@ -71,25 +72,25 @@ func (e *H264Encoder) Close() error {
 }
 
 // findBestSizeForH264Profile finds the best match given the size constraint and H264 profile
-func findBestSizeForH264Profile(profile string, constraints image.Point) (image.Point, error) {
-	profileSizes := map[string][]image.Point{
+func findBestSizeForH264Profile(profile string, constraints size.Size) (size.Size, error) {
+	profileSizes := map[string][]size.Size{
 		"3.1": {
-			{1280, 720},
-			{720, 576},
-			{720, 480},
-			{320, 240},
+			{Width: 1280, Height: 720},
+			{Width: 720, Height: 576},
+			{Width: 720, Height: 480},
+			{Width: 320, Height: 240},
 		},
 	}
 	if sizes, exists := profileSizes[profile]; exists {
 		minRatioDiff := math.MaxFloat64
-		var minRatioSize image.Point
+		var minRatioSize size.Size
 		for _, size := range sizes {
 			if size == constraints {
 				return size, nil
 			}
-			lowerRes := size.X < constraints.X && size.Y < constraints.Y
-			hRatio := float64(constraints.X) / float64(size.X)
-			vRatio := float64(constraints.Y) / float64(size.Y)
+			lowerRes := size.Width < constraints.Width && size.Height < constraints.Height
+			hRatio := float64(constraints.Width) / float64(size.Height)
+			vRatio := float64(constraints.Width) / float64(size.Height)
 			ratioDiff := math.Abs(hRatio - vRatio)
 			if lowerRes && (ratioDiff) < 0.0001 {
 				return size, nil
@@ -100,5 +101,9 @@ func findBestSizeForH264Profile(profile string, constraints image.Point) (image.
 		}
 		return minRatioSize, nil
 	}
-	return image.Point{}, fmt.Errorf("Profile %s not supported", profile)
+	return size.Size{}, fmt.Errorf("Profile %s not supported", profile)
+}
+
+func init() {
+	registeredEncoders[H264Codec] = newH264Encoder
 }
