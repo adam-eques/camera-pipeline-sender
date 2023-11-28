@@ -10,9 +10,13 @@ require (
 require (
 	github.com/blackjack/webcam v0.5.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/gen2brain/x264-go v0.3.0 // indirect
+	github.com/gen2brain/x264-go/x264c v0.0.0-20221204084822-82ee2951dea2 // indirect
+	github.com/gen2brain/x264-go/yuv v0.0.0-20221204084822-82ee2951dea2 // indirect
 	github.com/google/uuid v1.4.0 // indirect
 	github.com/gorilla/websocket v1.5.1 // indirect
 	github.com/joho/godotenv v1.5.1 // indirect
+	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/pion/datachannel v1.5.5 // indirect
 	github.com/pion/dtls/v2 v2.2.8 // indirect
 	github.com/pion/ice/v2 v2.3.11 // indirect

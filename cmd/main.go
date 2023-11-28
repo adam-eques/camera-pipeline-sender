@@ -16,6 +16,9 @@ func main() {
 	websocketUrl := os.Getenv("WEBSOCKET_URL")
 	stunUrl := os.Getenv("STURN_URL")
 	vss := vidoestreamsender.VideoStreamSender{}
-	vss.Init(websocketUrl, stunUrl)
+	err := vss.Init(websocketUrl, stunUrl)
+	if err != nil {
+		log.Default().Fatalf("Failed to init: %v", err)
+	}
 	vss.Run("output.h264")
 }

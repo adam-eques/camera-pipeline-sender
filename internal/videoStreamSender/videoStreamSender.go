@@ -5,16 +5,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
+	"image"
+	"image/draw"
 	"log"
 	"os"
 	"time"
 
+	// encoders "github.com/acentior/camera-pipeline-sender/internal/encoders"
+	"github.com/acentior/camera-pipeline-sender/internal/encoders"
 	"github.com/acentior/camera-pipeline-sender/internal/signaling"
 
+	"github.com/nfnt/resize"
+	"github.com/pion/mediadevices"
+	_ "github.com/pion/mediadevices/pkg/driver/camera"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
-	"github.com/pion/webrtc/v3/pkg/media/h264reader"
 )
 
 var logger *log.Logger
@@ -93,7 +98,7 @@ func (vss *VideoStreamSender) Run(videoFileName string) error {
 				panic(videoTrackErr)
 			}
 
-			rtpSender, videoTrackErr := peerConnection.AddTrack(videoTrack)
+			_, videoTrackErr = peerConnection.AddTrack(videoTrack)
 			if videoTrackErr != nil {
 				panic(videoTrackErr)
 			}
@@ -101,70 +106,52 @@ func (vss *VideoStreamSender) Run(videoFileName string) error {
 			// Read incoming RTCP packets
 			// Before these packets are returned they are processed by interceptors. For things
 			// like NACK this needs to be called.
-			go func() {
-				rtcpBuf := make([]byte, 1500)
-				for {
-					if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
-						return
-					}
-				}
-			}()
-
-			nextVideoSampleTime := time.Now()
-			timePerFrame := time.Millisecond * 33 // 30fps = 1000ms/30frames = 33.3ms
 
 			go func() {
-				file, h264Err := os.Open(videoFileName)
-				if h264Err != nil {
-					panic(h264Err)
+				size := image.Point{640, 480}
+				fps := 12
+				h264Encoder, err := encoders.NewH264Encoder(size, fps)
+				if err != nil {
+					log.Panic("Failed to get h264encoder", err)
+				}
+				rSize, err := h264Encoder.VideoSize()
+				if err != nil {
+					log.Panic("Failed to get target size", err)
 				}
 
-				h264, h264Err := h264reader.NewReader(file)
-				if h264Err != nil {
-					panic(h264Err)
+				stream, err := mediadevices.GetUserMedia(mediadevices.MediaStreamConstraints{
+					Video: func(mtc *mediadevices.MediaTrackConstraints) {},
+				})
+				if err != nil {
+					log.Panic("Failed to get camera", err)
 				}
+
+				logger.Printf("rSize %v", rSize)
+				vTrack := stream.GetVideoTracks()[0]
+				frameReader := vTrack.(*mediadevices.VideoTrack).NewReader(true)
 
 				// Wait for connection established
 				<-iceConnectedCtx.Done()
 				logger.Printf("Start stream sending")
-				logger.Printf("Start stream sending")
-
-				count := 0
-				const COUNT_MAX = 20
-
-				for {
-					nal, h264Err := h264.NextNAL()
-					if h264Err == io.EOF {
-						fmt.Printf("All video frames parsed and sent")
-						count += 1
-						if count >= COUNT_MAX {
-							os.Exit(0)
-						} else {
-							h264, h264Err = h264reader.NewReader(file)
-							if h264Err != nil {
-								panic(h264Err)
-							}
-						}
+				interval := time.Second / time.Duration(fps)
+				ticker := time.NewTicker(interval)
+				for range ticker.C {
+					imgFrame, _, err := frameReader.Read()
+					if err != nil {
+						log.Panic("Failed to get image frame from camera", err)
 					}
-					if h264Err != nil {
+
+					rgbaImage := imgToRGPA(imgFrame)
+					resized := resizeImage(rgbaImage, rSize)
+					encodedImage, err := h264Encoder.Encode(resized)
+					if err != nil {
+						logger.Printf("encode image error")
+						continue
+					}
+					if h264Err := videoTrack.WriteSample(media.Sample{Data: encodedImage, Timestamp: time.Now()}); h264Err != nil {
 						panic(h264Err)
 					}
-
-					// Golang's time.Sleep() is not precise enough for a consistent audio and video stream
-					// (see https://github.com/golang/go/issues/44343). Therefore, don't use an absolute
-					// sleep, but instead calculate the remaining sleep duration using wall clock time.
-					// The packets still will not be perfectly timed, but the error will average out to the point
-					// where the receiver's jitter buffer can compensate.
-					nextVideoSampleTime = nextVideoSampleTime.Add(timePerFrame)
-					sleepDuration := nextVideoSampleTime.Sub(time.Now())
-					if sleepDuration > 0 {
-						time.Sleep(sleepDuration)
-					}
-
-					logger.Printf("videoTrack: {%v}", videoTrack)
-					if h264Err = videoTrack.WriteSample(media.Sample{Data: nal.Data, Duration: time.Second}); h264Err != nil {
-						panic(h264Err)
-					}
+					logger.Printf("captured")
 				}
 			}()
 
@@ -267,4 +254,14 @@ func (vss *VideoStreamSender) PeerClose() error {
 		}
 	}
 	return nil
+}
+
+func resizeImage(src *image.RGBA, target image.Point) *image.RGBA {
+	return resize.Resize(uint(target.X), uint(target.Y), src, resize.Lanczos3).(*image.RGBA)
+}
+
+func imgToRGPA(img image.Image) *image.RGBA {
+	rgbaImg := image.NewRGBA(img.Bounds())
+	draw.Draw(rgbaImg, rgbaImg.Bounds(), img, img.Bounds().Min, draw.Src)
+	return rgbaImg
 }
