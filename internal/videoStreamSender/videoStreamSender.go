@@ -67,12 +67,7 @@ func (vss *VideoStreamSender) Init(websocktUrl string, stunUrl string) error {
 	return nil
 }
 
-func (vss *VideoStreamSender) Run(videoFileName string) error {
-	_, err := os.Stat(videoFileName)
-	if err != nil {
-		return err
-	}
-
+func (vss *VideoStreamSender) Run() error {
 	defer vss.sgl.Close()
 
 	vss.sgl.SendMsg(&signaling.WsMsg{
@@ -101,8 +96,15 @@ func (vss *VideoStreamSender) Run(videoFileName string) error {
 			fmt.Printf("offer: {%v}", offStr)
 			decodeOffer(offStr, &offer)
 
-			enc := &encoders.EncoderService{}
-			webrtcCodec, encCodec, err := findBestCodec(&offer, enc, "42e01f")
+			// enc := &encoders.EncoderService{}
+			// webrtcCodec, encCodec, err := findBestCodec(&offer, enc, "42e01f")
+			encCodec := encoders.H264Codec
+			webrtcCodec := &webrtc.RTPCodecParameters{
+				RTPCodecCapability: webrtc.RTPCodecCapability{
+					MimeType: webrtc.MimeTypeH264,
+				},
+			}
+
 			if err != nil {
 				panic(err)
 			}
@@ -228,8 +230,6 @@ func (vss *VideoStreamSender) Run(videoFileName string) error {
 			break
 		}
 	}
-
-	return nil
 }
 
 // Decode decodes the input from base64

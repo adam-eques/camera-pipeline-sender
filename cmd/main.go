@@ -20,5 +20,5 @@ func main() {
 	if err != nil {
 		log.Default().Fatalf("Failed to init: %v", err)
 	}
-	vss.Run("output.h264")
+	vss.Run()
 }
