@@ -21,6 +21,7 @@ type WsMsg struct {
 	SDP    string
 	Answer string
 	Data   string
+	ID     string
 }
 
 func NewWsMsg() *WsMsg {
@@ -30,6 +31,7 @@ func NewWsMsg() *WsMsg {
 		SDP:    "",
 		Answer: "",
 		Data:   "",
+		ID:     "",
 	}
 }
 
