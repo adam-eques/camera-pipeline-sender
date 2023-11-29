@@ -25,9 +25,9 @@ func init() {
 	logger = log.New(log.Writer(), "[videoStreamer/rtcStreamer]", log.LstdFlags)
 }
 
-func newRTCStreamer(capturer *CameraCapturer, encoder *encoders.Encoder, size size.Size) *rtcStreamer {
+func newRTCStreamer(tracks []*webrtc.TrackLocalStaticSample, capturer *CameraCapturer, encoder *encoders.Encoder, size size.Size) *rtcStreamer {
 	return &rtcStreamer{
-		tracks:      []*webrtc.TrackLocalStaticSample{},
+		tracks:      tracks,
 		stop:        make(chan struct{}),
 		newTrack:    make(chan *webrtc.TrackLocalStaticSample),
 		removeTrack: make(chan *webrtc.TrackLocalStaticSample),
@@ -40,12 +40,14 @@ func newRTCStreamer(capturer *CameraCapturer, encoder *encoders.Encoder, size si
 func (s *rtcStreamer) start() {
 	go func() {
 		capturer := *s.camCapturer
-		capturer.Start()
+		// capturer.agentAdded <- struct{}{}
 		frames := capturer.Frames()
 		for {
 			select {
 			case <-s.stop:
-				capturer.Stop()
+				// capturer.agentRemoved <- struct{}{}
+				// logger.Println("completed streamer")
+				return
 			case newTrack := <-s.newTrack:
 				s.tracks = append(s.tracks, newTrack)
 			case track := <-s.removeTrack:
@@ -77,16 +79,14 @@ func (s *rtcStreamer) stream(frame *image.RGBA) error {
 		return nil
 	}
 	delta := time.Duration(1000/s.camCapturer.Fps()) * time.Millisecond
-	logger.Printf("total tracks %v", len(s.tracks))
 	for _, track := range s.tracks {
-		logger.Printf("track : %v : %v", track.ID(), track)
 		err := track.WriteSample(media.Sample{
 			Data:      payload,
 			Timestamp: time.Now(),
 			Duration:  delta,
 		})
 		if err != nil {
-			logger.Printf("Sample is written into the track %v", track.ID())
+			logger.Printf("Sample is not written into the track %v", track.ID())
 		}
 	}
 	return nil

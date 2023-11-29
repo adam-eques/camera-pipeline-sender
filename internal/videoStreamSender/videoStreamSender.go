@@ -33,7 +33,6 @@ type VideoStreamSender struct {
 	camCapturer  *CameraCapturer
 	encService   *encoders.EncoderService
 	webrtcCodec  *webrtc.RTPCodecParameters
-	streamer     *rtcStreamer
 }
 
 func (vss *VideoStreamSender) Init(websocktUrl string, stunUrl string) error {
@@ -72,12 +71,6 @@ func (vss *VideoStreamSender) Init(websocktUrl string, stunUrl string) error {
 	vss.camCapturer = cc
 	vss.webrtcCodec = codecParam
 
-	// Get rtc streamer
-	streamer, err := vss.GetRTCStreamer(&vss.webrtcCodec.RTPCodecCapability, vss.camCapturer)
-	if err != nil {
-		return err
-	}
-	vss.streamer = streamer
 	return nil
 }
 
@@ -99,14 +92,22 @@ func (vss *VideoStreamSender) GetRTCStreamer(rtpCodecCap *webrtc.RTPCodecCapabil
 		return nil, err
 	}
 
-	streamer := newRTCStreamer(camCapturer, &encoder, size)
+	track, err := webrtc.NewTrackLocalStaticSample(
+		vss.webrtcCodec.RTPCodecCapability,
+		uuid.New().String(),
+		"camera-video",
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	streamer := newRTCStreamer([]*webrtc.TrackLocalStaticSample{track}, camCapturer, &encoder, size)
 	return streamer, nil
 }
 
 func (vss *VideoStreamSender) Run() error {
 	defer vss.sgl.Close()
-
-	vss.streamer.start()
+	vss.camCapturer.Start()
 
 	vss.sgl.SendMsg(&signaling.WsMsg{
 		Sender: true,
@@ -118,7 +119,6 @@ func (vss *VideoStreamSender) Run() error {
 		if err != nil {
 			log.Fatalf("Failed to read message from websocket {%v}", err)
 		}
-		logger.Printf("Received: {%v}", *message)
 		switch message.WSType {
 		case signaling.CONNECTED:
 			if message.Data == "double streamer" {
@@ -128,22 +128,15 @@ func (vss *VideoStreamSender) Run() error {
 			break
 		case signaling.SDP:
 			go func() {
-				track, err := webrtc.NewTrackLocalStaticSample(
-					vss.webrtcCodec.RTPCodecCapability,
-					uuid.New().String(),
-					"camera-video",
-				)
+				streamer, err := vss.GetRTCStreamer(&vss.webrtcCodec.RTPCodecCapability, vss.camCapturer)
 				if err != nil {
 					panic(err)
 				}
-
-				vss.streamer.newTrack <- track
+				track := streamer.tracks[0]
 
 				offStr := message.SDP
-				fmt.Printf("offer received {%v}", offStr)
 
 				offer := webrtc.SessionDescription{}
-				fmt.Printf("offer: {%v}", offStr)
 				decodeOffer(offStr, &offer)
 
 				if err != nil {
@@ -172,7 +165,7 @@ func (vss *VideoStreamSender) Run() error {
 					if err != nil {
 						panic(err)
 					}
-					logger.Printf("Direction: RTPTransceiverDirectionSendonly: %v", track)
+					logger.Println("Direction: RTPTransceiverDirectionSendonly")
 				} else {
 					logger.Fatalln("Unsupported transceiver direction")
 				}
@@ -186,10 +179,14 @@ func (vss *VideoStreamSender) Run() error {
 				// This will notify you when the peer has connected/disconnected
 				peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 					if connectionState == webrtc.ICEConnectionStateConnected {
+						logger.Println("start streamer")
+						streamer.start()
+						vss.camCapturer.AgentAdded()
 					}
 					if connectionState == webrtc.ICEConnectionStateDisconnected {
-						// streamer.Close()
-						vss.streamer.removeTrack <- track
+						vss.camCapturer.AgentRemoved()
+						streamer.Close()
+						peerConnection.Close()
 					}
 					logger.Printf("Connection State has changed %s \n", connectionState.String())
 				})
@@ -203,8 +200,10 @@ func (vss *VideoStreamSender) Run() error {
 						// Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
 						// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
 						// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
-						logger.Println("Peer Connection has gone to failed exiting")
-						return
+						logger.Println("Peer Connection has gone to failed exiting", track.ID())
+					}
+					if s == webrtc.PeerConnectionStateClosed {
+						logger.Println("Peer Connection has been closed", track.ID())
 					}
 				})
 
@@ -244,7 +243,6 @@ func (vss *VideoStreamSender) Run() error {
 // It can optionally unzip the input after decoding
 func decodeOffer(in string, obj interface{}) {
 	b, err := base64.StdEncoding.DecodeString(in)
-	fmt.Printf("offer: {%v}", b)
 	if err != nil {
 		panic(err)
 	}
