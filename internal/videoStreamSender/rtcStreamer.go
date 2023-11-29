@@ -12,8 +12,10 @@ import (
 )
 
 type rtcStreamer struct {
-	track       *webrtc.TrackLocalStaticSample
+	tracks      []*webrtc.TrackLocalStaticSample
 	stop        chan struct{}
+	newTrack    chan *webrtc.TrackLocalStaticSample
+	removeTrack chan *webrtc.TrackLocalStaticSample
 	encoder     *encoders.Encoder
 	size        size.Size
 	camCapturer *CameraCapturer
@@ -23,10 +25,12 @@ func init() {
 	logger = log.New(log.Writer(), "[videoStreamer/rtcStreamer]", log.LstdFlags)
 }
 
-func newRTCStreamer(track *webrtc.TrackLocalStaticSample, capturer *CameraCapturer, encoder *encoders.Encoder, size size.Size) *rtcStreamer {
+func newRTCStreamer(capturer *CameraCapturer, encoder *encoders.Encoder, size size.Size) *rtcStreamer {
 	return &rtcStreamer{
-		track:       track,
+		tracks:      []*webrtc.TrackLocalStaticSample{},
 		stop:        make(chan struct{}),
+		newTrack:    make(chan *webrtc.TrackLocalStaticSample),
+		removeTrack: make(chan *webrtc.TrackLocalStaticSample),
 		encoder:     encoder,
 		size:        size,
 		camCapturer: capturer,
@@ -42,7 +46,16 @@ func (s *rtcStreamer) start() {
 			select {
 			case <-s.stop:
 				capturer.Stop()
-				return
+			case newTrack := <-s.newTrack:
+				s.tracks = append(s.tracks, newTrack)
+			case track := <-s.removeTrack:
+				tracks := []*webrtc.TrackLocalStaticSample{}
+				for _, v := range s.tracks {
+					if v.ID() != track.ID() {
+						tracks = append(tracks, v)
+					}
+				}
+				s.tracks = tracks
 			case frame := <-frames:
 				err := s.stream(frame)
 				if err != nil {
@@ -64,11 +77,19 @@ func (s *rtcStreamer) stream(frame *image.RGBA) error {
 		return nil
 	}
 	delta := time.Duration(1000/s.camCapturer.Fps()) * time.Millisecond
-	return s.track.WriteSample(media.Sample{
-		Data:      payload,
-		Timestamp: time.Now(),
-		Duration:  delta,
-	})
+	logger.Printf("total tracks %v", len(s.tracks))
+	for _, track := range s.tracks {
+		logger.Printf("track : %v : %v", track.ID(), track)
+		err := track.WriteSample(media.Sample{
+			Data:      payload,
+			Timestamp: time.Now(),
+			Duration:  delta,
+		})
+		if err != nil {
+			logger.Printf("Sample is written into the track %v", track.ID())
+		}
+	}
+	return nil
 }
 
 func (s *rtcStreamer) Close() {

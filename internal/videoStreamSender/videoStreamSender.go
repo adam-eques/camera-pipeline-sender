@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/draw"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 
@@ -30,12 +29,11 @@ func init() {
 
 type VideoStreamSender struct {
 	sgl          *signaling.Signaling
-	peerConn     *webrtc.PeerConnection
 	webrtcConfig *webrtc.Configuration
 	camCapturer  *CameraCapturer
 	encService   *encoders.EncoderService
-	streamer     *rtcStreamer
 	webrtcCodec  *webrtc.RTPCodecParameters
+	streamer     *rtcStreamer
 }
 
 func (vss *VideoStreamSender) Init(websocktUrl string, stunUrl string) error {
@@ -69,25 +67,25 @@ func (vss *VideoStreamSender) Init(websocktUrl string, stunUrl string) error {
 		},
 	}
 
-	// Get rtc streamer
-	streamer, err := vss.GetRTCStreamer(cc.Size(), cc.Fps(), codecParam.RTPCodecCapability, cc)
-	if err != nil {
-		return err
-	}
-
 	vss.sgl = &s
 	vss.webrtcConfig = &peerConConfig
 	vss.camCapturer = cc
 	vss.webrtcCodec = codecParam
+
+	// Get rtc streamer
+	streamer, err := vss.GetRTCStreamer(&vss.webrtcCodec.RTPCodecCapability, vss.camCapturer)
+	if err != nil {
+		return err
+	}
 	vss.streamer = streamer
 	return nil
 }
 
-func (vss *VideoStreamSender) GetRTCStreamer(srcSize size.Size, fps int, rtpCodecCap webrtc.RTPCodecCapability, camCapturer *CameraCapturer) (*rtcStreamer, error) {
+func (vss *VideoStreamSender) GetRTCStreamer(rtpCodecCap *webrtc.RTPCodecCapability, camCapturer *CameraCapturer) (*rtcStreamer, error) {
 	encCodec := encoders.H264Codec
 	// Create a encoder
-	logger.Printf("encCodec: %+v\nwidth: %+v\nheight: %+v\nfps: %+v\n", encCodec, srcSize.Width, srcSize.Height, fps)
-	encoder, err := vss.encService.NewEncoder(encCodec, srcSize, fps)
+	logger.Printf("encCodec: %+v\nwidth: %+v\nheight: %+v\nfps: %+v\n", encCodec, camCapturer.Size().Width, camCapturer.Size().Height, camCapturer.Fps())
+	encoder, err := vss.encService.NewEncoder(encCodec, camCapturer.Size(), camCapturer.Fps())
 
 	logger.Println("encoder start: ============")
 	logger.Println(encoder)
@@ -101,21 +99,14 @@ func (vss *VideoStreamSender) GetRTCStreamer(srcSize size.Size, fps int, rtpCode
 		return nil, err
 	}
 
-	track, err := webrtc.NewTrackLocalStaticSample(
-		rtpCodecCap,
-		"camera-video",
-		uuid.New().String(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	streamer := newRTCStreamer(track, camCapturer, &encoder, size)
+	streamer := newRTCStreamer(camCapturer, &encoder, size)
 	return streamer, nil
 }
 
 func (vss *VideoStreamSender) Run() error {
 	defer vss.sgl.Close()
+
+	vss.streamer.start()
 
 	vss.sgl.SendMsg(&signaling.WsMsg{
 		Sender: true,
@@ -136,103 +127,114 @@ func (vss *VideoStreamSender) Run() error {
 			}
 			break
 		case signaling.SDP:
-			offStr := message.SDP
-			fmt.Printf("offer received {%v}", offStr)
-
-			offer := webrtc.SessionDescription{}
-			fmt.Printf("offer: {%v}", offStr)
-			decodeOffer(offStr, &offer)
-
-			if err != nil {
-				panic(err)
-			}
-			mediaEngine := webrtc.MediaEngine{}
-			mediaEngine.RegisterCodec(*vss.webrtcCodec, webrtc.RTPCodecTypeVideo)
-			api := webrtc.NewAPI(webrtc.WithMediaEngine(&mediaEngine))
-			peerConnection, err := api.NewPeerConnection(*vss.webrtcConfig)
-			if err != nil {
-				panic(err)
-			}
-			vss.peerConn = peerConnection
-			track := vss.streamer.track
-
-			direction := webrtc.RTPTransceiverDirectionRecvonly
-
-			if direction == webrtc.RTPTransceiverDirectionSendrecv {
-				_, err = peerConnection.AddTrack(track)
+			go func() {
+				track, err := webrtc.NewTrackLocalStaticSample(
+					vss.webrtcCodec.RTPCodecCapability,
+					uuid.New().String(),
+					"camera-video",
+				)
 				if err != nil {
 					panic(err)
 				}
-				logger.Println("Direction: RTPTransceiverDirectionSendrecv")
-			} else if direction == webrtc.RTPTransceiverDirectionRecvonly {
-				_, err = peerConnection.AddTransceiverFromTrack(track, webrtc.RtpTransceiverInit{
-					Direction: webrtc.RTPTransceiverDirectionSendonly,
+
+				vss.streamer.newTrack <- track
+
+				offStr := message.SDP
+				fmt.Printf("offer received {%v}", offStr)
+
+				offer := webrtc.SessionDescription{}
+				fmt.Printf("offer: {%v}", offStr)
+				decodeOffer(offStr, &offer)
+
+				if err != nil {
+					panic(err)
+				}
+				mediaEngine := webrtc.MediaEngine{}
+				mediaEngine.RegisterCodec(*vss.webrtcCodec, webrtc.RTPCodecTypeVideo)
+				api := webrtc.NewAPI(webrtc.WithMediaEngine(&mediaEngine))
+				peerConnection, err := api.NewPeerConnection(*vss.webrtcConfig)
+				if err != nil {
+					panic(err)
+				}
+
+				direction := webrtc.RTPTransceiverDirectionRecvonly
+
+				if direction == webrtc.RTPTransceiverDirectionSendrecv {
+					_, err = peerConnection.AddTrack(track)
+					if err != nil {
+						panic(err)
+					}
+					logger.Println("Direction: RTPTransceiverDirectionSendrecv")
+				} else if direction == webrtc.RTPTransceiverDirectionRecvonly {
+					_, err = peerConnection.AddTransceiverFromTrack(track, webrtc.RtpTransceiverInit{
+						Direction: webrtc.RTPTransceiverDirectionSendonly,
+					})
+					if err != nil {
+						panic(err)
+					}
+					logger.Printf("Direction: RTPTransceiverDirectionSendonly: %v", track)
+				} else {
+					logger.Fatalln("Unsupported transceiver direction")
+				}
+
+				// Set the remote SessionDescription
+				if err = peerConnection.SetRemoteDescription(offer); err != nil {
+					panic(err)
+				}
+
+				// Set the handler for ICE connection state
+				// This will notify you when the peer has connected/disconnected
+				peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
+					if connectionState == webrtc.ICEConnectionStateConnected {
+					}
+					if connectionState == webrtc.ICEConnectionStateDisconnected {
+						// streamer.Close()
+						vss.streamer.removeTrack <- track
+					}
+					logger.Printf("Connection State has changed %s \n", connectionState.String())
 				})
+
+				// Set the handler for Peer connection state
+				// This will notify you when the peer has connected/disconnected
+				peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+					logger.Printf("Peer Connection State has changed: %s\n", s.String())
+
+					if s == webrtc.PeerConnectionStateFailed {
+						// Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
+						// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
+						// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
+						logger.Println("Peer Connection has gone to failed exiting")
+						return
+					}
+				})
+
+				// Create answer
+				answer, err := peerConnection.CreateAnswer(nil)
 				if err != nil {
 					panic(err)
 				}
-				logger.Println("Direction: RTPTransceiverDirectionSendonly")
-			} else {
-				logger.Fatalln("Unsupported transceiver direction")
-			}
 
-			// Set the remote SessionDescription
-			if err = peerConnection.SetRemoteDescription(offer); err != nil {
-				panic(err)
-			}
+				// send the answer in base64
+				vss.sgl.SendMsg(&signaling.WsMsg{
+					Sender: true,
+					WSType: signaling.SDP,
+					SDP:    encodeOffer(answer),
+					ID:     message.ID,
+				})
 
-			// Set the handler for ICE connection state
-			// This will notify you when the peer has connected/disconnected
-			peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-				if connectionState == webrtc.ICEConnectionStateConnected {
-					vss.start()
+				// Create channel that is blocked until ICE Gathering is complete
+				gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
+
+				// Sets the LocalDescription, and starts our UDP listeners
+				if err = peerConnection.SetLocalDescription(answer); err != nil {
+					panic(err)
 				}
-				if connectionState == webrtc.ICEConnectionStateDisconnected {
-					vss.Stop()
-				}
-				logger.Printf("Connection State has changed %s \n", connectionState.String())
-			})
 
-			// Set the handler for Peer connection state
-			// This will notify you when the peer has connected/disconnected
-			peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-				logger.Printf("Peer Connection State has changed: %s\n", s.String())
-
-				if s == webrtc.PeerConnectionStateFailed {
-					// Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
-					// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
-					// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
-					logger.Println("Peer Connection has gone to failed exiting")
-					os.Exit(0)
-				}
-			})
-
-			// Create answer
-			answer, err := peerConnection.CreateAnswer(nil)
-			if err != nil {
-				panic(err)
-			}
-
-			// send the answer in base64
-			vss.sgl.SendMsg(&signaling.WsMsg{
-				Sender: true,
-				WSType: signaling.SDP,
-				SDP:    encodeOffer(answer),
-			})
-
-			// Create channel that is blocked until ICE Gathering is complete
-			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
-
-			// Sets the LocalDescription, and starts our UDP listeners
-			if err = peerConnection.SetLocalDescription(answer); err != nil {
-				panic(err)
-			}
-
-			// Block until ICE Gathering is complete, disabling trickle ICE
-			// we do this because we only can exchange one signaling message
-			// in a production application you should exchange ICE Candidates via OnICECandidate
-			<-gatherComplete
-
+				// Block until ICE Gathering is complete, disabling trickle ICE
+				// we do this because we only can exchange one signaling message
+				// in a production application you should exchange ICE Candidates via OnICECandidate
+				<-gatherComplete
+			}()
 			break
 		}
 	}
@@ -262,30 +264,6 @@ func encodeOffer(obj interface{}) string {
 	}
 
 	return base64.StdEncoding.EncodeToString(b)
-}
-
-func (vss *VideoStreamSender) PeerClose() error {
-	if vss != nil {
-		if err := vss.peerConn.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (vss *VideoStreamSender) start() {
-	vss.streamer.start()
-}
-
-func (vss *VideoStreamSender) Stop() error {
-	if vss.streamer != nil {
-		vss.streamer.Close()
-	}
-
-	if vss.peerConn != nil {
-		return vss.peerConn.Close()
-	}
-	return nil
 }
 
 func resizeImage(src *image.RGBA, target size.Size) *image.RGBA {
