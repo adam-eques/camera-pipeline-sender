@@ -2,6 +2,7 @@ package vidoestreamsender
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"time"
 
@@ -12,11 +13,14 @@ import (
 )
 
 type CameraCapturer struct {
-	fps         int
-	frames      chan *image.RGBA
-	stop        chan struct{}
-	frameReader *video.Reader
-	size        size.Size
+	fps          int
+	agentNum     int
+	frames       chan *image.RGBA
+	stop         chan struct{}
+	agentAdded   chan struct{}
+	agentRemoved chan struct{}
+	frameReader  *video.Reader
+	size         size.Size
 }
 
 func CreateCameraCapturer(width int, height int, fps int) (*CameraCapturer, error) {
@@ -41,31 +45,45 @@ func CreateCameraCapturer(width int, height int, fps int) (*CameraCapturer, erro
 	freader := vTrack.NewReader(true)
 
 	return &CameraCapturer{
-		fps:         fps,
-		frames:      make(chan *image.RGBA),
-		stop:        make(chan struct{}),
-		frameReader: &freader,
-		size:        vSize,
+		fps:          fps,
+		agentNum:     0,
+		frames:       make(chan *image.RGBA),
+		stop:         make(chan struct{}),
+		agentAdded:   make(chan struct{}),
+		agentRemoved: make(chan struct{}),
+		frameReader:  &freader,
+		size:         vSize,
 	}, nil
 }
 
 // Start initiates the screen capture loop
 func (cc *CameraCapturer) Start() {
+	fmt.Println("capturer started")
 	delta := time.Duration(1000/cc.fps) * time.Millisecond
 	go func() {
 		for {
 			startedAt := time.Now()
 			select {
 			case <-cc.stop:
+				fmt.Println("Close cam capturer")
 				close(cc.frames)
 				return
+			case <-cc.agentAdded:
+				cc.agentNum += 1
+				fmt.Printf("new agent added %v\n", cc.agentNum)
+			case <-cc.agentRemoved:
+				cc.agentNum -= 1
+				fmt.Printf("new agent removed %v\n", cc.agentNum)
 			default:
 				img, _, err := (*cc.frameReader).Read()
 				if err != nil {
+					fmt.Printf("Error while read cam: %v\n", err)
 					return
 				}
 				rgbaImage := imgToRGPA(img)
-				cc.frames <- rgbaImage
+				for i := 0; i < cc.agentNum; i++ {
+					cc.frames <- rgbaImage
+				}
 				ellapsed := time.Now().Sub(startedAt)
 				sleepDuration := delta - ellapsed
 				if sleepDuration > 0 {
@@ -94,4 +112,12 @@ func (cc *CameraCapturer) Fps() int {
 // Get size (width and height of the captured image)
 func (cc *CameraCapturer) Size() size.Size {
 	return cc.size
+}
+
+func (cc *CameraCapturer) AgentAdded() {
+	cc.agentAdded <- struct{}{}
+}
+
+func (cc *CameraCapturer) AgentRemoved() {
+	cc.agentRemoved <- struct{}{}
 }
