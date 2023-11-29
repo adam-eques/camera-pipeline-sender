@@ -35,11 +35,11 @@ WEBSOCKET_URL=ws://192.168.148.91:8080
    Values are example. You can replace url with the signaling server's url on your local network following this format
 
    ws://ip:port
-- Run without binary file
+- Run without a binary file
 ```
 make run
 ```
-- Build binary file
+- Build a binary file
 ```
 make build
 ```
