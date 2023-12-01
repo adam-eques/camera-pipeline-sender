@@ -75,6 +75,9 @@ func (e *H264Encoder) Close() error {
 func findBestSizeForH264Profile(profile string, constraints size.Size) (size.Size, error) {
 	profileSizes := map[string][]size.Size{
 		"3.1": {
+			{Width: 1920, Height: 1920},
+			{Width: 1920, Height: 1440},
+			{Width: 1920, Height: 1080},
 			{Width: 1280, Height: 720},
 			{Width: 720, Height: 576},
 			{Width: 720, Height: 480},
@@ -88,7 +91,7 @@ func findBestSizeForH264Profile(profile string, constraints size.Size) (size.Siz
 			if size == constraints {
 				return size, nil
 			}
-			lowerRes := size.Width < constraints.Width && size.Height < constraints.Height
+			lowerRes := size.Width <= constraints.Width && size.Height <= constraints.Height
 			hRatio := float64(constraints.Width) / float64(size.Height)
 			vRatio := float64(constraints.Width) / float64(size.Height)
 			ratioDiff := math.Abs(hRatio - vRatio)
@@ -99,6 +102,7 @@ func findBestSizeForH264Profile(profile string, constraints size.Size) (size.Siz
 				minRatioSize = size
 			}
 		}
+		fmt.Printf("RiatioSize %v", minRatioSize)
 		return minRatioSize, nil
 	}
 	return size.Size{}, fmt.Errorf("Profile %s not supported", profile)

@@ -43,6 +43,12 @@ func CreateCameraCapturer(width int, height int, fps int) (*CameraCapturer, erro
 
 	vTrack := videoTracks[0].(*mediadevices.VideoTrack)
 	freader := vTrack.NewReader(true)
+	// img, _, err := freader.Read()
+	// bounds := img.Bounds()
+	// vSize := size.Size{Width: bounds.Dx(), Height: bounds.Dy()}
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	return &CameraCapturer{
 		fps:          fps,

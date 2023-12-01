@@ -54,7 +54,7 @@ func (vss *VideoStreamSender) Init(websocktUrl string, stunUrl string) error {
 	}
 
 	// Init camera capturer
-	cc, err := CreateCameraCapturer(640, 480, 60)
+	cc, err := CreateCameraCapturer(1920, 1440, 60)
 	if err != nil {
 		return err
 	}
